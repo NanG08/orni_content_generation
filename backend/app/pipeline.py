@@ -517,12 +517,37 @@ def _extract_video_url(resp) -> str:
 
 
 def _extract_audio_data_uri(resp) -> str:
-    """Flash TTS -> audio data-uri (typically PCM/L16 or mp3 inline bytes)."""
+    """Flash TTS -> playable audio data-uri. The model returns RAW PCM
+    (audio/l16;rate=24000), which browsers can't play — wrap it in a WAV
+    container so `new Audio(src).play()` just works."""
     for part in resp.candidates[0].content.parts:
         blob = getattr(part, "inline_data", None)
         if blob and blob.data and (blob.mime_type or "").startswith("audio"):
-            return f"data:{blob.mime_type};base64," + base64.b64encode(blob.data).decode()
+            mime = blob.mime_type or ""
+            if "l16" in mime or "pcm" in mime.lower():
+                rate = 24000
+                for token in mime.replace(" ", "").split(";"):
+                    if token.startswith("rate="):
+                        rate = int(token.removeprefix("rate="))
+                wav = _pcm16_to_wav(blob.data, rate)
+                return "data:audio/wav;base64," + base64.b64encode(wav).decode()
+            return f"data:{mime};base64," + base64.b64encode(blob.data).decode()
     raise RuntimeError("no audio part in Flash TTS response")
+
+
+def _pcm16_to_wav(pcm: bytes, rate: int, channels: int = 1) -> bytes:
+    """Wrap raw 16-bit PCM in a minimal WAV header."""
+    import io
+    import wave
+
+    buf = io.BytesIO()
+    w = wave.open(buf, "wb")
+    w.setnchannels(channels)
+    w.setsampwidth(2)
+    w.setframerate(rate)
+    w.writeframes(pcm)
+    w.close()
+    return buf.getvalue()
 
 
 def _ffmpeg_last_frame(video_src: str) -> str:
