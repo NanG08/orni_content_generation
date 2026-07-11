@@ -55,7 +55,7 @@ class Settings:
     stt_provider: str = os.getenv("STT_PROVIDER", "google")     # google | deepgram
     tts_provider: str = os.getenv("TTS_PROVIDER", "google")     # google | elevenlabs
     tts_voice: str = os.getenv("TTS_VOICE", "Kore")             # Flash TTS prebuilt voice
-    deepgram_api_key: str = os.getenv("DEEPGRAM_API_KEY") or os.getenv("GEMINI_API_KEY_1", "")  # STT
+    deepgram_api_key: str = os.getenv("GEMINI_API_KEY_1", "")  # STT (Deepgram key)
     # Voice-INPUT language for Deepgram. "en-IN" = Indian English (default).
     # Set "hi"/"kn"/"ta" for those languages, or "multi" for code-switching.
     stt_language: str = os.getenv("STT_LANGUAGE", "en-IN")

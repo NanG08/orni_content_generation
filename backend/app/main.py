@@ -113,7 +113,8 @@ async def ws_stt(browser: WebSocket):
     import websockets
 
     dg_url = (
-        f"wss://api.deepgram.com/v1/listen?model=nova-2&language={settings.stt_language}&"
+        "wss://api.deepgram.com/v1/listen?model=nova-2&"
+        "detect_language=true&"
         "encoding=linear16&sample_rate=16000&interim_results=true&smart_format=true"
     )
     try:

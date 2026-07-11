@@ -99,7 +99,27 @@ async def parse_intent(text: str, selected_id: Optional[str]) -> Intent:
             intent = Intent.model_validate_json(resp.text)
         except Exception:
             intent = Intent(action="unknown", confidence=0.0)
-        return intent.model_copy(update={"energy": _detect_energy(text)})
+        intent = intent.model_copy(update={"energy": _detect_energy(text)})
+        # If Gemini returned "create" or "unknown" but the user asked for video
+        # (including Hindi/Hinglish terms), upgrade to animate.
+        if intent.action in ("create", "unknown"):
+            t = text.lower()
+            _VIDEO_UPGRADE = ("video", "reel", "clip", "animate", "cinematic",
+                              "video campaign", "make a video", "also make", "promo",
+                              "video ki", "video bana", "video chahiye", "video karo",
+                              "video banana", "video banao")
+            if any(w in t for w in _VIDEO_UPGRADE):
+                intent = intent.model_copy(update={"action": "animate",
+                                                   "target_asset_id": None,
+                                                   "motion": text,
+                                                   "product": intent.product or _guess_product(text),
+                                                   "background": intent.background or _guess_bg(text)})
+        # If still unknown but has enough context, treat as create
+        if intent.action == "unknown" and (intent.product or _guess_product(text) != "the product"):
+            intent = intent.model_copy(update={"action": "create",
+                                               "product": intent.product or _guess_product(text),
+                                               "background": intent.background or _guess_bg(text)})
+        return intent
     except Exception:
         # Intent keeps a heuristic fallback (it stays usable), but LOG so a real
         # API failure is visible instead of silently looking like it "worked".
@@ -145,8 +165,7 @@ async def generate_image(intent: Intent, prior_prompt: Optional[str] = None) -> 
 # OMNI FLASH  (video + final-frame chaining)
 # =============================================================================
 async def generate_video(intent: Intent, reference_src: str, chain_from: Optional[str] = None) -> str:
-    """Video generation via Veo (client.models.generate_videos).
-    Polls until complete, returns a data-uri or file URI."""
+    """Video generation via Veo. Takes the generated image data-uri as reference."""
     if settings.use_mocks:
         await asyncio.sleep(random.uniform(1.5, 3.0))
         return _mock_video_placeholder()
@@ -156,20 +175,27 @@ async def generate_video(intent: Intent, reference_src: str, chain_from: Optiona
               if chain_from else omni_motion_prompt(intent))
     try:
         from google.genai import types
-        # Veo takes an image as the reference frame
-        image_part = _as_part(reference_src)
+
+        # Veo needs a types.Image, not a Part. Extract raw bytes + mime from data-uri.
+        img_bytes, img_mime = _data_uri_to_bytes(reference_src)
+        # Veo only accepts JPEG or PNG — convert SVG/other to PNG via Pillow if needed
+        if img_mime not in ("image/jpeg", "image/png"):
+            img_bytes, img_mime = _to_png(img_bytes)
+
+        image = types.Image(image_bytes=img_bytes, mime_type=img_mime)
+
         op = await asyncio.to_thread(
             client.models.generate_videos,
             model=settings.model_video,
             prompt=prompt,
-            image=image_part,
+            image=image,
             config=types.GenerateVideosConfig(
                 aspect_ratio=intent.aspect,
                 duration_seconds=5,
                 number_of_videos=1,
             ),
         )
-        # Poll the long-running operation
+        # Poll the long-running operation to completion
         for _ in range(60):  # up to 5 min
             await asyncio.sleep(5)
             op = await asyncio.to_thread(client.operations.get, op)
@@ -382,13 +408,32 @@ def _mock_intent(text: str, selected_id: Optional[str]) -> Intent:
 
     animate_cues = ("video", "clip", "animate", "animated", "animation", "cinematic",
                     "reel", "turn that", "into a clip", "trailer", "panning", " pan ",
-                    "zoom", "rain", "promo", "short film", "motion")
+                    "zoom", "rain", "promo", "short film", "motion",
+                    "video campaign", "make a video", "create a video", "instagram video",
+                    "instagram reel", "make it a video", "also make", "make video",
+                    # Hindi/Hinglish video cues
+                    "video ki", "video bana", "video chahiye", "video karo",
+                    "video banana", "video banao", "video ka", "video mein",
+                    "clip bana", "reel bana", "reel chahiye")
     continue_cues = ("now ", "then ", "next ", " enters", " walks", " runs",
                      " drives", " opens", "he ", "she ")
     energy = _detect_energy(text)
-    if any(w in t for w in animate_cues) or (
+    wants_video = any(w in t for w in animate_cues) or (
         selected_id and any(w in t for w in continue_cues)
-    ):
+    )
+    # "create ... video" in same sentence = create image THEN animate
+    wants_create = any(w in t for w in ("create", "make", "generate", "design", "build",
+                                         "chahiye", "banana", "banao", "bana", "chaahiye",
+                                         "campaign", "ad ", "advertisement"))
+    if wants_video and wants_create and not selected_id:
+        # Signal both: action=animate but no target_asset_id so route_video
+        # will auto-create the image anchor first.
+        return Intent(action="animate", target_asset_id=None,
+                      motion=text, interrupt=interrupt, energy=energy,
+                      product=_guess_product(text), background=_guess_bg(text),
+                      copy_text=_between_quotes(text), style=_guess_style(text),
+                      aspect=aspect)
+    if wants_video:
         return Intent(action="animate", target_asset_id=selected_id,
                       motion=text, interrupt=interrupt, energy=energy,
                       product=_guess_product(text), background=_guess_bg(text),
@@ -413,15 +458,21 @@ def _between_quotes(s: str) -> Optional[str]:
 
 def _guess_product(s: str) -> str:
     for kw in ("coffee shop", "café", "cafe", "cold brew", "coffee", "water bottle",
-               "bottle", "sneaker", "perfume", "phone", "watch"):
+               "bottle", "sneaker", "perfume", "phone", "watch", "restaurant",
+               "bakery", "gym", "salon", "store", "brand",
+               # Hindi/Hinglish
+               "dukaan", "chai", "dhaba", "hotel", "khana", "food"):
         if kw in s.lower():
             return kw
     return "the product"
 
 
 def _guess_bg(s: str) -> Optional[str]:
-    for kw in ("bangalore", "bengaluru", "mumbai street", "indiranagar", "cafe",
-               "wooden table", "beach", "neon", "studio"):
+    for kw in ("bangalore", "bengaluru", "mumbai", "delhi", "indiranagar",
+               "mumbai street", "cafe", "wooden table", "beach", "neon", "studio",
+               "instagram", "outdoor", "rooftop", "market",
+               # Hindi/Hinglish locations
+               "dilli", "bombay", "hyderabad", "chennai", "pune", "kolkata"):
         if kw in s.lower():
             return kw
     return None
@@ -491,6 +542,33 @@ def _mock_video_placeholder() -> str:
 
 
 # ---- real-mode extraction stubs (fill against SDK on the day) ---------------
+def _data_uri_to_bytes(data_uri: str) -> tuple[bytes, str]:
+    """Extract raw bytes and mime type from a data-uri string."""
+    header, b64 = data_uri.split(",", 1)
+    mime = header.split(";")[0].removeprefix("data:")
+    return base64.b64decode(b64), mime
+
+
+def _to_png(img_bytes: bytes) -> tuple[bytes, str]:
+    """Convert any image bytes (SVG, WebP, etc.) to PNG using Pillow.
+    Falls back to cairosvg for SVG if Pillow can't handle it."""
+    import io
+    try:
+        from PIL import Image as PILImage
+        img = PILImage.open(io.BytesIO(img_bytes)).convert("RGBA")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue(), "image/png"
+    except Exception:
+        # SVG fallback via cairosvg
+        try:
+            import cairosvg
+            png = cairosvg.svg2png(bytestring=img_bytes)
+            return png, "image/png"
+        except Exception:
+            raise RuntimeError("Cannot convert image to PNG — install Pillow or cairosvg")
+
+
 def _as_part(src: str):
     from google.genai import types
     if src.startswith("data:"):

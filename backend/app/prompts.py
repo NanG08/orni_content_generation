@@ -20,14 +20,25 @@ INTENT_SYSTEM_PROMPT = """You are the intent parser for a voice-driven ad studio
 You receive a short spoken utterance (already transcribed) and output ONE JSON
 object matching the Intent schema. Nothing else — no prose, no markdown.
 
+The utterance may be in English, Hindi, Kannada, Tamil, or mixed Hinglish.
+Always parse the MEANING regardless of language. Examples:
+- "video chahiye" / "video banana hai" / "video ki kaam" = wants a video → action: animate
+- "campaign chahiye" / "ad banana" = wants a campaign → action: animate if video mentioned, else create
+- "bangalore mein" / "bangalore ka" = background: bangalore
+- "coffee shop" / "cafe" / "dukaan" = product
+
 Rules:
 - RESOLVE self-corrections. "a red bottle, no, blue" -> the FINAL value wins
   (blue). Never emit both. The user thinking out loud is normal.
+- IMPORTANT: If the user says "create/make a video campaign", "make a video", "video for Instagram",
+  or mentions BOTH creating something AND making a video in the same sentence, set action to
+  "animate" (NOT "create"). The route_video handler will auto-create the image anchor first.
 - action:
-    create   -> a brand new asset is being described (new product/scene).
+    create   -> a brand new STILL IMAGE asset (no video mentioned).
     edit     -> modify the CURRENTLY SELECTED asset (lighting, copy, background,
                 color) WITHOUT changing what the product is.
-    animate  -> turn the current still into motion/video.
+    animate  -> turn the current still into motion/video, OR create a new video
+                campaign from scratch (when video is mentioned in the request).
     localize -> translate the current campaign into another language.
     wardrobe -> apparel change on the current avatar/subject.
     unknown  -> you genuinely cannot tell; ask nothing, just set low confidence.

@@ -23,27 +23,25 @@ export async function startVoice(handlers) {
     handlers.onState?.("error:mic-denied");
     return { stop: () => {} };
   }
-  permStream.getTracks().forEach((t) => t.stop()); // release; each engine opens its own
+  permStream.getTracks().forEach((t) => t.stop());
 
-  // GOOGLE MODELS ONLY (default): Gemini Live if a token is available, else
-  // Google voice = browser Web Speech (Chrome's Google recognizer) + a Gemini
-  // /transcribe recorded-audio fallback. Deepgram runs ONLY if the backend
-  // explicitly reports STT_PROVIDER=deepgram.
+  // Check backend for STT provider — Deepgram takes priority for multilingual
+  // (Hindi, Kannada, Tamil, English). Falls back to browser Web Speech only if
+  // Deepgram is not configured.
+  try {
+    const stt = await (await fetch("/stt-status")).json();
+    if (stt.provider === "deepgram") return startDeepgramVoice(handlers);
+  } catch { /* backend down, fall through */ }
+
+  // Gemini Live (if token available)
   try {
     const cfg = await (await fetch("/live-token")).json();
     if (cfg.mode === "live" && cfg.token) {
       try {
         return startGeminiLiveVoice({ ...handlers, token: cfg.token, model: cfg.model });
-      } catch {
-        handlers.onState?.("error:live");
-      }
+      } catch { /* fall through */ }
     }
   } catch { /* backend down */ }
-
-  try {
-    const stt = await (await fetch("/stt-status")).json();
-    if (stt.provider === "deepgram") return startDeepgramVoice(handlers);
-  } catch { /* default to google */ }
 
   return startGoogleVoice(handlers);
 }
