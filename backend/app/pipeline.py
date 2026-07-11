@@ -111,82 +111,111 @@ async def parse_intent(text: str, selected_id: Optional[str]) -> Intent:
 # NB2 LITE  (image anchor)
 # =============================================================================
 async def generate_image(intent: Intent, prior_prompt: Optional[str] = None) -> str:
-    """Returns an image src. prior_prompt signals an edit — keeps product identity,
-    changes only what was asked (lighting, copy, background)."""
+    """Text->image via gemini-2.0-flash-preview-image-generation.
+    For edits, sends the prior image as a part alongside the edit instruction."""
     if settings.use_mocks:
         await asyncio.sleep(random.uniform(0.5, 1.2))
         return _mock_ad_svg(intent)
 
     client = _genai_client()
+    from google.genai import types
     try:
         if prior_prompt:
+            # Edit: send original image + edit instruction together
             prompt = nb2_edit_prompt(intent, prior_prompt)
-            model = settings.model_edit
+            contents = [prompt, _as_part(prior_prompt)] if prior_prompt.startswith("data:") else prompt
         else:
-            prompt = nb2_image_prompt(intent)
-            model = settings.model_image
+            contents = nb2_image_prompt(intent)
+
         resp = await asyncio.to_thread(
             client.models.generate_content,
-            model=model,
-            contents=prompt,
-            config={"response_modalities": ["IMAGE"]},
+            model=settings.model_image,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                response_modalities=["IMAGE", "TEXT"],
+            ),
         )
         return _first_image(resp)
     except Exception:
-        # Surface the REAL error to the UI instead of silently faking a mock —
-        # a silent fallback is what made real failures look like "mock mode".
-        log.exception("NB2 image generation failed (model=%s)", model)
+        log.exception("Image generation failed (model=%s)", settings.model_image)
         raise
 
 
 # =============================================================================
-# OMNI FLASH  (video, + final-frame chaining)
+# OMNI FLASH  (video + final-frame chaining)
 # =============================================================================
 async def generate_video(intent: Intent, reference_src: str, chain_from: Optional[str] = None) -> str:
+    """Video generation via Veo (client.models.generate_videos).
+    Polls until complete, returns a data-uri or file URI."""
     if settings.use_mocks:
         await asyncio.sleep(random.uniform(1.5, 3.0))
         return _mock_video_placeholder()
 
-    # Omni Flash video goes through the Interactions API (client.interactions),
-    # NOT generate_content. Chaining feeds the previous clip's final frame in as
-    # the reference so the two clips read as one continuous take.
+    client = _genai_client()
     prompt = (omni_chain_prompt(intent.motion or "continue the scene")
               if chain_from else omni_motion_prompt(intent))
-    return await _omni_video(prompt, reference_src)
+    try:
+        from google.genai import types
+        # Veo takes an image as the reference frame
+        image_part = _as_part(reference_src)
+        op = await asyncio.to_thread(
+            client.models.generate_videos,
+            model=settings.model_video,
+            prompt=prompt,
+            image=image_part,
+            config=types.GenerateVideosConfig(
+                aspect_ratio=intent.aspect,
+                duration_seconds=5,
+                number_of_videos=1,
+            ),
+        )
+        # Poll the long-running operation
+        for _ in range(60):  # up to 5 min
+            await asyncio.sleep(5)
+            op = await asyncio.to_thread(client.operations.get, op)
+            if op.done:
+                break
+        if not op.done:
+            raise RuntimeError("Veo video generation timed out")
+        video = op.response.generated_videos[0].video
+        if getattr(video, "uri", None):
+            return video.uri
+        if getattr(video, "video_bytes", None):
+            return "data:video/mp4;base64," + base64.b64encode(video.video_bytes).decode()
+        raise RuntimeError("Veo returned no video data")
+    except Exception:
+        log.exception("Veo video generation failed (model=%s)", settings.model_video)
+        raise
 
 
-async def _omni_video(prompt: str, image_src: str) -> str:
-    """Create a background Omni Flash interaction, poll to completion, return the
-    generated clip as a data-uri. Video gen takes ~30s — pre-cache for the demo."""
-    from google.genai._gaos.types.interactions.createmodelinteraction import CreateModelInteraction
-    from google.genai._gaos.types.interactions.imagecontent import ImageContent
-    from google.genai._gaos.types.interactions.textcontent import TextContent
-
+async def generate_audio_track(intent: Intent) -> str:
+    """Background music via gemini-2.0-flash generate_content with AUDIO modality."""
+    if settings.use_mocks:
+        return ""
     client = _genai_client()
-    header, b64 = image_src.split(",", 1)
-    mime = header.split(";")[0].removeprefix("data:")
-    body = CreateModelInteraction(
-        model=settings.model_video,
-        input=[TextContent(text=prompt), ImageContent(data=b64, mime_type=mime)],
-        background=True,
+    from google.genai import types
+    product = intent.product or "product"
+    style = intent.style or "cinematic"
+    energy = getattr(intent, "energy", "medium")
+    energy_music = {
+        "high": "high-energy, punchy beats, driving rhythm, bold brass",
+        "low":  "ambient, soft pads, gentle melody, understated",
+    }.get(energy, "warm, uplifting, commercial ad music")
+    prompt = (
+        f"Generate a 5 second background music track for a {product} advertisement. "
+        f"Style: {style}, {energy_music}. No vocals. Fade in and out."
     )
-    created = await asyncio.to_thread(
-        lambda: client.interactions.create(request={"body": body}))
-    iid = created.id
-    log.info("Omni Flash interaction %s started", iid)
-
-    for _ in range(40):  # ~4 min ceiling; poll every 6s
-        await asyncio.sleep(6)
-        g = await asyncio.to_thread(lambda: client.interactions.get(iid))
-        status = getattr(g, "status", None)
-        if status == "completed":
-            ov = getattr(g, "output_video", None)
-            if ov and getattr(ov, "data", None):
-                return f"data:{ov.mime_type or 'video/mp4'};base64,{ov.data}"
-            raise RuntimeError("Omni Flash completed but returned no video")
-        if status in ("failed", "cancelled", "error"):
-            raise RuntimeError(f"Omni Flash interaction {status}")
-    raise RuntimeError("Omni Flash timed out (>4 min)")
+    try:
+        resp = await asyncio.to_thread(
+            client.models.generate_content,
+            model="gemini-2.0-flash-preview-image-generation",
+            contents=prompt,
+            config=types.GenerateContentConfig(response_modalities=["AUDIO"]),
+        )
+        return _extract_audio_data_uri(resp)
+    except Exception:
+        log.warning("Audio track generation failed, skipping")
+        return ""
 
 
 async def extract_final_frame(video_src: str) -> str:

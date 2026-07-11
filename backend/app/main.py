@@ -292,13 +292,23 @@ async def route_video(s: Session, intent: Intent):
                  poster=_store_media(asset["src"]), overlay=_overlay(asset["intent"]),
                  chained=chaining)
 
-    # voiceover if a spoken line was requested
-    script = _quote_in(intent.motion or "")
-    if script:
-        audio = await pipeline.synthesize_voice(script)
-        await s.send(type="audio", asset_id=asset_id, src=audio, script=script)
+    # Auto-generate voiceover + background music in parallel using Omni Flash.
+    # Voiceover: use quoted line from motion prompt, or auto-generate from product.
+    script = _quote_in(intent.motion or "") or _auto_script(asset["intent"])
+    voice_task = asyncio.create_task(pipeline.synthesize_voice(script)) if script else None
+    music_task = asyncio.create_task(pipeline.generate_audio_track(asset["intent"]))
+
+    if voice_task:
+        voice_src = await voice_task
+        if voice_src:
+            await s.send(type="audio", asset_id=asset_id, src=voice_src,
+                         script=script, kind="voice")
+    music_src = await music_task
+    if music_src:
+        await s.send(type="audio", asset_id=asset_id, src=music_src, kind="music")
+
     await s.send(type="status", stage="done",
-                 message="Continuous clip extended" if chaining else "Clip ready")
+                 message="Continuous clip extended" if chaining else "Clip + audio ready")
 
 
 async def route_wardrobe(s: Session, intent: Intent):
@@ -340,6 +350,18 @@ async def route_localize(s: Session, intent: Intent):
     await s.send(type="overlay_update", asset_id=asset_id,
                  overlay={"text": translated, "lang": lang})
     await s.send(type="status", stage="done", message=f"Localized → {lang}")
+
+
+def _auto_script(intent: Intent) -> str:
+    """Generate a short voiceover line from the intent when none was spoken."""
+    product = intent.product or "this"
+    copy = intent.copy_text
+    if copy:
+        return copy
+    bg = intent.background
+    if bg:
+        return f"{product.title()} — {bg}."
+    return f"Discover {product}."
 
 
 def _overlay(intent: Intent) -> dict:

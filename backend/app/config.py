@@ -38,15 +38,13 @@ class Settings:
     # bidi streaming Live API ONLY — they 404 on generateContent. So text→JSON
     # intent parsing and text translation use a normal generateContent model
     # (gemini-3.5-flash), while model_live is used only by the voice socket.
-    model_intent: str = os.getenv("MODEL_INTENT", "gemini-3.5-flash")            # intent + translate (generateContent)
-    model_live: str = os.getenv("MODEL_LIVE", "gemini-3.1-flash-live-preview")   # bidi audio session only
-    model_translate: str = os.getenv("MODEL_TRANSLATE", "gemini-3.5-flash")      # text translate via generateContent
-    model_image: str = os.getenv("MODEL_IMAGE", "gemini-3.1-flash-lite-image")  # NB2 Lite (works)
-    # Photorealistic image EDITING / virtual try-on needs an image model that
-    # accepts an input image and edits it (not the lite text-to-image path).
-    model_edit: str = os.getenv("MODEL_EDIT", "gemini-3.1-flash-image")          # realistic wardrobe/edit
-    model_video: str = os.getenv("MODEL_VIDEO", "gemini-omni-flash-preview")     # Omni Flash
-    model_tts: str = os.getenv("MODEL_TTS", "gemini-3.1-flash-tts-preview")
+    model_intent: str = os.getenv("MODEL_INTENT", "gemini-2.0-flash")                      # intent + translate
+    model_live: str = os.getenv("MODEL_LIVE", "gemini-2.0-flash-live-001")                  # bidi audio session
+    model_translate: str = os.getenv("MODEL_TRANSLATE", "gemini-2.0-flash")                 # text translate
+    model_image: str = os.getenv("MODEL_IMAGE", "gemini-2.0-flash-preview-image-generation") # text->image
+    model_edit: str = os.getenv("MODEL_EDIT", "gemini-2.0-flash-preview-image-generation")   # image edit
+    model_video: str = os.getenv("MODEL_VIDEO", "veo-2.0-generate-001")                      # Veo video gen
+    model_tts: str = os.getenv("MODEL_TTS", "gemini-2.5-flash-preview-tts")                  # TTS
 
     # --- optional non-Google voice providers (reliable STT/TTS fallbacks) ----
     # Leave blank to use the Google/browser path. If a key is present it takes

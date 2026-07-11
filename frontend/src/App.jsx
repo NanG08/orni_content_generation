@@ -49,8 +49,19 @@ export default function App() {
           chained: !!msg.chained }));
         break;
       case "audio":
-        if (msg.src) new Audio(msg.src).play().catch(() => {});
-        else if (msg.script) speak(msg.script); // browser fallback (mock mode)
+        if (msg.kind === "music") {
+          // background music — play at low volume under the video
+          if (msg.src) {
+            const music = new Audio(msg.src);
+            music.volume = 0.25;
+            music.loop = true;
+            music.play().catch(() => {});
+          }
+        } else {
+          // voiceover — full volume, no loop
+          if (msg.src) new Audio(msg.src).play().catch(() => {});
+          else if (msg.script) speak(msg.script);
+        }
         break;
       case "overlay_update":
         setAsset((a) => (a && a.id === msg.asset_id ? { ...a, overlay: msg.overlay } : a));
