@@ -1,0 +1,7 @@
+fastapi>=0.111
+uvicorn[standard]>=0.30
+pydantic>=2.7
+python-dotenv>=1.0
+websockets>=12   # server-side Deepgram STT proxy (/ws-stt)
+# enable on the day (real mode only):
+google-genai>=0.3
