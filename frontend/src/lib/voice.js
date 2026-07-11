@@ -25,7 +25,10 @@ export async function startVoice(handlers) {
   }
   permStream.getTracks().forEach((t) => t.stop()); // release; each engine opens its own
 
-  // Priority: Gemini Live -> Deepgram -> browser Web Speech.
+  // GOOGLE MODELS ONLY (default): Gemini Live if a token is available, else
+  // Google voice = browser Web Speech (Chrome's Google recognizer) + a Gemini
+  // /transcribe recorded-audio fallback. Deepgram runs ONLY if the backend
+  // explicitly reports STT_PROVIDER=deepgram.
   try {
     const cfg = await (await fetch("/live-token")).json();
     if (cfg.mode === "live" && cfg.token) {
@@ -35,16 +38,79 @@ export async function startVoice(handlers) {
         handlers.onState?.("error:live");
       }
     }
-    // mock mode or no token -> skip straight to browser speech (no deepgram needed)
-    if (cfg.mode === "mock") return startBrowserVoice(handlers);
   } catch { /* backend down */ }
 
   try {
     const stt = await (await fetch("/stt-status")).json();
     if (stt.provider === "deepgram") return startDeepgramVoice(handlers);
-  } catch { /* no deepgram */ }
+  } catch { /* default to google */ }
 
-  return startBrowserVoice(handlers);
+  return startGoogleVoice(handlers);
+}
+
+// ---------------------------------------------------------------------------
+// 0) GOOGLE VOICE  (Web Speech live + Gemini /transcribe recorded fallback)
+// ---------------------------------------------------------------------------
+// Merged from the team's Orni branch: while Web Speech streams interim results
+// (interrupt detection + transcript), a MediaRecorder keeps a webm copy of the
+// utterance. If Web Speech yields nothing (unsupported browser, noisy room),
+// the recording is POSTed to /transcribe and Gemini itself transcribes it —
+// so STT stays 100% Google end to end.
+export function startGoogleVoice({ onTranscript, onInterrupt, onState }) {
+  let gotText = false;
+  let recorder = null;
+  let recStream = null;
+  const chunks = [];
+
+  // background recorder (the Gemini fallback source)
+  (async () => {
+    try {
+      recStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recorder = new MediaRecorder(recStream);
+      recorder.ondataavailable = (e) => e.data?.size > 0 && chunks.push(e.data);
+      recorder.onstop = async () => {
+        recStream?.getTracks().forEach((t) => t.stop());
+        if (gotText || chunks.length === 0) return;
+        // Web Speech produced nothing -> let Gemini transcribe the recording
+        try {
+          const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+          const b64 = await new Promise((res) => {
+            const r = new FileReader();
+            r.onloadend = () => res(r.result.split(",")[1]);
+            r.readAsDataURL(blob);
+          });
+          const out = await (await fetch("/transcribe", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ audioBytes: b64, mimeType: blob.type }),
+          })).json();
+          if (out.text?.trim()) onTranscript?.(out.text.trim());
+          else onState?.("error:no-speech");
+        } catch {
+          onState?.("error:transcribe");
+        }
+      };
+      recorder.start(250);
+    } catch { /* no mic for recorder; Web Speech may still work */ }
+  })();
+
+  const live = startBrowserVoice({
+    onTranscript: (text) => {
+      gotText = true;
+      onTranscript?.(text);
+    },
+    onInterrupt,
+    onState,
+  });
+
+  return {
+    stop: () => {
+      live.stop();
+      try {
+        if (recorder && recorder.state !== "inactive") recorder.stop();
+      } catch { /* noop */ }
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

@@ -12,6 +12,8 @@ export default defineConfig({
       "/healthz": "http://127.0.0.1:8000",
       "/stt-status": "http://127.0.0.1:8000",
       "/live-token": "http://127.0.0.1:8000",
+      "/media": "http://127.0.0.1:8000",
+      "/transcribe": "http://127.0.0.1:8000",
     },
   },
 });

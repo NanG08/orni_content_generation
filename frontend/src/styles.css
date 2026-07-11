@@ -105,11 +105,37 @@ main {
   color: #06121a; font-weight: 700; cursor: pointer;
 }
 .upload {
-  display: block; text-align: center; padding: 10px; border-radius: 10px;
-  border: 1px dashed var(--line); color: var(--muted); font-size: 13px;
-  cursor: pointer; transition: 0.15s;
+  display: block; width: 100%; text-align: center; padding: 10px; border-radius: 10px;
+  border: 1px dashed var(--line); background: transparent; color: var(--muted);
+  font-size: 13px; cursor: pointer; transition: 0.15s;
 }
 .upload:hover { border-color: var(--accent2); color: var(--fg); }
+
+/* ---- real-time wardrobe camera modal ---- */
+.camera-modal {
+  position: fixed; inset: 0; z-index: 50; display: flex;
+  align-items: center; justify-content: center; background: rgba(0,0,0,0.75);
+}
+.camera-box {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 18px;
+  padding: 16px; display: flex; flex-direction: column; gap: 12px;
+  max-width: 420px; width: 90vw;
+}
+.camera-box video {
+  width: 100%; border-radius: 12px; background: #000; aspect-ratio: 9/16;
+  object-fit: cover; transform: scaleX(-1); /* mirror like a selfie */
+}
+.camera-err { color: var(--warn); text-align: center; padding: 40px 10px; }
+.camera-actions { display: flex; gap: 10px; }
+.camera-actions .snap {
+  flex: 1; padding: 12px; border: none; border-radius: 10px; cursor: pointer;
+  background: linear-gradient(90deg, var(--accent), #b23c7e); color: #fff;
+  font-weight: 700;
+}
+.camera-actions .cancel {
+  padding: 12px 16px; border-radius: 10px; border: 1px solid var(--line);
+  background: transparent; color: var(--muted); cursor: pointer;
+}
 .status { font-size: 13px; color: var(--muted); min-height: 18px; }
 
 .transcript, .intent {

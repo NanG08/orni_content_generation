@@ -243,12 +243,37 @@ async def generate_wardrobe(intent: Intent, reference_src: str) -> str:
 
 
 # =============================================================================
-# TTS
+# STT  (Google-only: Gemini transcribes recorded mic audio — merged from the
+# team's Orni branch /transcribe route)
+# =============================================================================
+async def transcribe_audio(audio_b64: str, mime_type: str = "audio/webm") -> str:
+    """Send recorded browser audio inline to Gemini and get the transcript back.
+    This is the Google-models-only STT path (no Deepgram)."""
+    if settings.use_mocks:
+        return ""
+    client = _genai_client()
+    resp = await asyncio.to_thread(
+        client.models.generate_content,
+        model=settings.model_intent,  # gemini-3.5-flash accepts inline audio
+        contents=[
+            {"inline_data": {"mime_type": mime_type, "data": audio_b64}},
+            {"text": "Transcribe this audio precisely. Return ONLY the transcription "
+                     "text, no commentary. If it is not English, transcribe in the "
+                     "spoken language. If there is no speech (silence/noise), "
+                     "return an empty string."},
+        ],
+    )
+    return (resp.text or "").strip()
+
+
+# =============================================================================
+# TTS  (Google-only: Flash TTS with speechConfig — merged from Orni tts.ts)
 # =============================================================================
 async def synthesize_voice(script: str, tone: str = "deep, cinematic narrator") -> str:
-    # ElevenLabs takes priority for TTS if a key is present — this works even
-    # while the generative models are still mocked, so you can test voice early.
-    if settings.elevenlabs_api_key and script:
+    if not script:
+        return ""
+    # ElevenLabs only if EXPLICITLY selected — default is Google models only.
+    if settings.tts_provider == "elevenlabs" and settings.elevenlabs_api_key:
         return await asyncio.to_thread(_elevenlabs_tts, script)
     if settings.use_mocks:
         await asyncio.sleep(0.4)
@@ -259,9 +284,18 @@ async def synthesize_voice(script: str, tone: str = "deep, cinematic narrator") 
             client.models.generate_content,
             model=settings.model_tts,
             contents=tts_prompt(script, tone),
+            config={
+                "response_modalities": ["AUDIO"],
+                "speech_config": {
+                    "voice_config": {
+                        "prebuilt_voice_config": {"voice_name": settings.tts_voice}
+                    }
+                },
+            },
         )
         return _extract_audio_data_uri(resp)
     except Exception:
+        log.exception("Flash TTS failed (model=%s)", settings.model_tts)
         return ""
 
 

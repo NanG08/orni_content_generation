@@ -14,17 +14,34 @@ Design choices that matter for the demo:
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import uuid
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import pipeline
 from .config import settings
 from .prompts import nb2_image_prompt as nb2_image_prompt_str
 from .schemas import Intent
+
+# Generated media is served over HTTP (not stuffed into WS JSON) — a video clip
+# is ~2MB, which blows past WS frame limits and bloats every message. We keep the
+# raw data-uri internally (pipelines need the bytes for chaining/try-on) and hand
+# the frontend a short /media/<id> URL to render.
+MEDIA: Dict[str, Tuple[bytes, str]] = {}
+
+
+def _store_media(data_uri: str) -> str:
+    if not data_uri or not data_uri.startswith("data:"):
+        return data_uri  # already a URL or empty
+    header, b64 = data_uri.split(",", 1)
+    mime = header.split(";")[0].removeprefix("data:")
+    mid = uuid.uuid4().hex
+    MEDIA[mid] = (base64.b64decode(b64), mime)
+    return f"/media/{mid}"
 
 app = FastAPI(title="VoiceCanvas AI relay")
 app.add_middleware(
@@ -38,6 +55,16 @@ async def healthz():
             "models": {"image": settings.model_image, "video": settings.model_video}}
 
 
+@app.get("/media/{mid}")
+async def media(mid: str):
+    item = MEDIA.get(mid)
+    if not item:
+        return Response(status_code=404)
+    data, mime = item
+    return Response(content=data, media_type=mime,
+                    headers={"Cache-Control": "public, max-age=3600"})
+
+
 @app.get("/live-token")
 async def live_token():
     """Gemini Live ephemeral token. The auth_tokens API is not yet stable in the
@@ -48,9 +75,29 @@ async def live_token():
 
 @app.get("/stt-status")
 async def stt_status():
-    """Tells the frontend whether to use the Deepgram proxy for STT. The key
-    itself never leaves the server — audio is relayed through /ws-stt below."""
-    return {"provider": "deepgram" if settings.deepgram_api_key else None}
+    """Which STT engine the frontend should use. Default is Google-only:
+    browser Web Speech (Chrome's Google recognizer) for live interim results,
+    with recorded-audio fallback transcribed by Gemini via /transcribe.
+    Deepgram activates only when STT_PROVIDER=deepgram is set explicitly."""
+    if settings.stt_provider == "deepgram" and settings.deepgram_api_key:
+        return {"provider": "deepgram"}
+    return {"provider": "google"}
+
+
+@app.post("/transcribe")
+async def transcribe(payload: dict):
+    """Google-only STT fallback (merged from the team's Orni branch): the
+    browser records an utterance (webm) and Gemini transcribes it. Used when
+    Web Speech is unavailable or returned nothing."""
+    audio_b64 = payload.get("audioBytes", "")
+    mime = payload.get("mimeType", "audio/webm")
+    if not audio_b64:
+        return {"text": "", "error": "audioBytes required"}
+    try:
+        text = await pipeline.transcribe_audio(audio_b64, mime)
+        return {"text": text}
+    except Exception as e:
+        return {"text": "", "error": str(e)[:200]}
 
 
 @app.websocket("/ws-stt")
@@ -66,7 +113,7 @@ async def ws_stt(browser: WebSocket):
     import websockets
 
     dg_url = (
-        "wss://api.deepgram.com/v1/listen?model=nova-2&language=en-IN&"
+        f"wss://api.deepgram.com/v1/listen?model=nova-2&language={settings.stt_language}&"
         "encoding=linear16&sample_rate=16000&interim_results=true&smart_format=true"
     )
     try:
@@ -137,7 +184,7 @@ async def ws_endpoint(ws: WebSocket):
                 s.assets[aid] = {"intent": Intent(action="wardrobe"),
                                  "src": data.get("src"), "kind": "avatar"}
                 s.selected_id = aid
-                await s.send(type="asset", asset_id=aid, src=data.get("src"),
+                await s.send(type="asset", asset_id=aid, src=_store_media(data.get("src")),
                              aspect="9:16", overlay={"text": "", "lang": "en"})
                 await s.send(type="status", stage="done",
                              message="Photo loaded — say what to wear")
@@ -196,8 +243,8 @@ async def route_image(s: Session, intent: Intent):
     prompt_used = prior or nb2_image_prompt_str(intent)
     s.assets[asset_id] = {"intent": intent, "src": src, "prompt": prompt_used}
     s.selected_id = asset_id
-    await s.send(type="asset", asset_id=asset_id, src=src, aspect=intent.aspect,
-                 overlay=_overlay(intent))
+    await s.send(type="asset", asset_id=asset_id, src=_store_media(src),
+                 aspect=intent.aspect, overlay=_overlay(intent))
     await s.send(type="status", stage="done", message="Ad ready")
 
 
@@ -216,7 +263,7 @@ async def route_video(s: Session, intent: Intent):
         s.assets[asset_id] = {"intent": intent, "src": src,
                                "prompt": nb2_image_prompt_str(intent)}
         s.selected_id = asset_id
-        await s.send(type="asset", asset_id=asset_id, src=src,
+        await s.send(type="asset", asset_id=asset_id, src=_store_media(src),
                      aspect=intent.aspect, overlay=_overlay(intent))
 
     asset = s.assets[asset_id]
@@ -241,8 +288,8 @@ async def route_video(s: Session, intent: Intent):
         video = await pipeline.generate_video(intent, ref)
 
     asset["video"] = video
-    await s.send(type="video", asset_id=asset_id, src=video,
-                 poster=asset["src"], overlay=_overlay(asset["intent"]),
+    await s.send(type="video", asset_id=asset_id, src=_store_media(video),
+                 poster=_store_media(asset["src"]), overlay=_overlay(asset["intent"]),
                  chained=chaining)
 
     # voiceover if a spoken line was requested
@@ -275,7 +322,7 @@ async def route_wardrobe(s: Session, intent: Intent):
     s.assets[asset_id]["src"] = src
     s.assets[asset_id]["intent"] = intent
     s.selected_id = asset_id
-    await s.send(type="asset", asset_id=asset_id, src=src, aspect="9:16",
+    await s.send(type="asset", asset_id=asset_id, src=_store_media(src), aspect="9:16",
                  overlay={"text": intent.wardrobe or "", "lang": "en", "aspect": "9:16"})
     await s.send(type="status", stage="done", message="Look applied")
 

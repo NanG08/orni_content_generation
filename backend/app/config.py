@@ -52,7 +52,15 @@ class Settings:
     # Leave blank to use the Google/browser path. If a key is present it takes
     # priority for that leg only (STT or TTS); generative models stay Google.
     # Support both the usual DEEPGRAM_API_KEY name and the renamed key you use.
+    # GOOGLE MODELS ONLY by default. Third-party providers exist as dormant
+    # fallbacks and activate only when *_PROVIDER is explicitly set to them.
+    stt_provider: str = os.getenv("STT_PROVIDER", "google")     # google | deepgram
+    tts_provider: str = os.getenv("TTS_PROVIDER", "google")     # google | elevenlabs
+    tts_voice: str = os.getenv("TTS_VOICE", "Kore")             # Flash TTS prebuilt voice
     deepgram_api_key: str = os.getenv("DEEPGRAM_API_KEY") or os.getenv("GEMINI_API_KEY_1", "")  # STT
+    # Voice-INPUT language for Deepgram. "en-IN" = Indian English (default).
+    # Set "hi"/"kn"/"ta" for those languages, or "multi" for code-switching.
+    stt_language: str = os.getenv("STT_LANGUAGE", "en-IN")
     elevenlabs_api_key: str = os.getenv("ELEVENLABS_API_KEY", "")       # TTS
     elevenlabs_voice_id: str = os.getenv("ELEVENLABS_VOICE_ID", "")     # a voice id
 

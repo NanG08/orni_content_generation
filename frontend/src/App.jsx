@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import CameraCapture from "./components/CameraCapture.jsx";
 import CanvasStage from "./components/CanvasStage.jsx";
 import { connect } from "./lib/socket.js";
 import { startVoice, speak } from "./lib/voice.js";
@@ -10,6 +11,7 @@ export default function App() {
   const [intent, setIntent] = useState(null);
   const [listening, setListening] = useState(false);
   const [mock, setMock] = useState(true);
+  const [camera, setCamera] = useState(false);    // real-time wardrobe capture
   const sockRef = useRef(null);
   const voiceRef = useRef(null);
 
@@ -120,7 +122,12 @@ export default function App() {
             <button>Send</button>
           </form>
 
-          {/* upload a REAL creator photo to dress (photorealistic try-on) */}
+          {/* REAL-TIME WARDROBE: snap yourself, then voice-swap outfits */}
+          <button className="upload" onClick={() => setCamera(true)}>
+            🤳 Use camera — real-time wardrobe
+          </button>
+
+          {/* or upload a REAL creator photo to dress (photorealistic try-on) */}
           <label className="upload">
             📷 Upload a photo to try on clothes
             <input type="file" accept="image/*" hidden onChange={onUploadPhoto} />
@@ -164,6 +171,13 @@ export default function App() {
           </details>
         </aside>
       </main>
+
+      {camera && (
+        <CameraCapture
+          onCapture={(dataUri) => sockRef.current?.uploadAvatar(dataUri)}
+          onClose={() => setCamera(false)}
+        />
+      )}
     </div>
   );
 }
